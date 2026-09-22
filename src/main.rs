@@ -1,5 +1,6 @@
 use glium::winit::event_loop::{ControlFlow, EventLoop};
 mod app;
+mod physics;
 
 
 fn main() {
