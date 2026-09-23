@@ -7,40 +7,166 @@ use glium::Surface;
 use std::f32::consts::PI;
 use crate::physics::Ray;
 use glam::DVec2;
+use crate::camera::Camera;
+use glium::winit::event::{ElementState, MouseButton, MouseScrollDelta};
 
-// 1. Define the vertex format
 #[derive(Copy, Clone)]
-struct Vertex {
-    position: [f32; 2],
+struct Vertex3D {
+    position: [f32; 3],
 }
-implement_vertex!(Vertex, position);
+implement_vertex!(Vertex3D, position);
 
 pub struct App {
     display: Option<glium::Display<glium::glutin::surface::WindowSurface>>,
     window: Option<glium::winit::window::Window>,
     program: Option<glium::Program>,
-    vertex_buffer: Option<glium::VertexBuffer<Vertex>>,
+    vertex_buffer: Option<glium::VertexBuffer<Vertex3D>>,
+    index_buffer: Option<glium::IndexBuffer<u32>>,
     rays: Vec<Ray>,
     rs: f64,
-}
+    camera: Camera,
+    last_cursor: (f64, f64),
 
-const WORLD_TO_NDC: f32 = 1.0 / 6.0;
+    // Grid rendering
+    grid_program: Option<glium::Program>,
+    grid_vertex_buffer: Option<glium::VertexBuffer<Vertex3D>>,
+    grid_index_buffer: Option<glium::IndexBuffer<u32>>,
+}
 
 impl Default for App {
     fn default() -> Self {
+        let mut camera = Camera::default();
+        camera.radius = 6.0;
         let rs = 1.0_f64;
-        let rays_vec = vec![Ray::new(DVec2::new(-5.0, 1.5), DVec2::new(1.0, 0.0), rs),
-                                    Ray::new(DVec2::new(-5.0, 3.5), DVec2::new(1.0, 0.0), rs),
-                                    Ray::new(DVec2::new(-5.0, 5.5), DVec2::new(1.0, 0.0), rs),
-                                    Ray::new(DVec2::new(-5.0, -3.5), DVec2::new(1.0, 0.0), rs),
-                                    Ray::new(DVec2::new(-5.0, -2.5), DVec2::new(1.0, 0.0), rs)
 
-        ];
         App {
-            display: None, window: None, program: None, vertex_buffer: None,
-            rays: rays_vec,
+            display: None, 
+            window: None, 
+            program: None, 
+            vertex_buffer: None,
+            index_buffer: None,
+            rays: Vec::new(),
             rs,
+            camera,
+            last_cursor: (0.0, 0.0),
+            grid_program: None,
+            grid_vertex_buffer: None,
+            grid_index_buffer: None,
         }
+    }
+}
+
+impl App {
+    /// Generate a 3D UV Sphere mesh for the Event Horizon
+    fn generate_sphere(
+        &self, 
+        display: &glium::Display<glium::glutin::surface::WindowSurface>,
+        rings: u32,
+        sectors: u32,
+    ) -> (glium::VertexBuffer<Vertex3D>, glium::IndexBuffer<u32>) {
+        let radius = self.rs as f32;
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // 1. Generate sphere vertices using spherical coordinates
+        for i in 0..=rings {
+            let theta = i as f32 * PI / rings as f32; // 0 to PI (north pole to south pole)
+            let sin_theta = theta.sin();
+            let cos_theta = theta.cos();
+
+            for j in 0..=sectors {
+                let phi = j as f32 * 2.0 * PI / sectors as f32; // 0 to 2*PI (around the equator)
+                let sin_phi = phi.sin();
+                let cos_phi = phi.cos();
+
+                let x = radius * sin_theta * cos_phi;
+                let y = radius * cos_theta; // Y is up
+                let z = radius * sin_theta * sin_phi;
+
+                vertices.push(Vertex3D { position: [x, y, z] });
+            }
+        }
+
+        // 2. Connect vertices into triangles
+        for i in 0..rings {
+            for j in 0..sectors {
+                let first = i * (sectors + 1) + j;
+                let second = first + sectors + 1;
+
+                // Triangle 1
+                indices.push(first);
+                indices.push(second);
+                indices.push(first + 1);
+
+                // Triangle 2
+                indices.push(second);
+                indices.push(second + 1);
+                indices.push(first + 1);
+            }
+        }
+
+        let vb = glium::VertexBuffer::new(display, &vertices).unwrap();
+        let ib = glium::IndexBuffer::new(
+            display, 
+            glium::index::PrimitiveType::TrianglesList, 
+            &indices
+        ).unwrap();
+
+        (vb, ib)
+    }
+
+    /// Generate Flamm's paraboloid grid mesh
+    fn generate_grid(&self, display: &glium::Display<glium::glutin::surface::WindowSurface>)
+        -> (glium::VertexBuffer<Vertex3D>, glium::IndexBuffer<u32>)
+    {
+        const GRID_SIZE: usize = 25;
+        const SPACING: f32 = 0.4;
+
+        let mut vertices = Vec::new();
+        let rs = self.rs as f32;
+
+        // Generate grid vertices
+        for z in 0..=GRID_SIZE {
+            for x in 0..=GRID_SIZE {
+                let world_x = (x as f32 - GRID_SIZE as f32 / 2.0) * SPACING;
+                let world_z = (z as f32 - GRID_SIZE as f32 / 2.0) * SPACING;
+
+                let r = (world_x * world_x + world_z * world_z).sqrt();
+
+                // Flamm's paraboloid formula: y = 2·√(rs·(r − rs))
+                let y = if r > rs {
+                    2.0 * (rs * (r - rs)).sqrt()
+                } else {
+                    // Inside event horizon: create a pit
+                    -2.0 * (rs * rs).sqrt()
+                };
+
+                vertices.push(Vertex3D {
+                    position: [world_x, y, world_z],
+                });
+            }
+        }
+
+        // Generate line indices (connect adjacent points)
+        let mut indices = Vec::new();
+        for z in 0..GRID_SIZE {
+            for x in 0..GRID_SIZE {
+                let i = (z * (GRID_SIZE + 1) + x) as u32;
+
+                // Horizontal line
+                indices.push(i);
+                indices.push(i + 1);
+
+                // Vertical line
+                indices.push(i);
+                indices.push(i + (GRID_SIZE + 1) as u32);
+            }
+        }
+
+        let vb = glium::VertexBuffer::new(display, &vertices).unwrap();
+        let ib = glium::IndexBuffer::new(display, glium::index::PrimitiveType::LinesList, &indices).unwrap();
+
+        (vb, ib)
     }
 }
 
@@ -50,13 +176,13 @@ impl ApplicationHandler for App {
             .with_title("singularity")
             .build(event_loop);
 
-        // 2. Write the vertex and fragment shaders
+        // Shaders for the 3D Sphere
         let vertex_shader_src = r#"
             #version 140
-            in vec2 position;
-            uniform mat4 matrix;
+            in vec3 position;
+            uniform mat4 view_proj;
             void main() {
-                gl_Position = matrix * vec4(position, 0.0, 1.0);
+                gl_Position = view_proj * vec4(position, 1.0);
             }
         "#;
 
@@ -76,106 +202,142 @@ impl ApplicationHandler for App {
             None,
         ).unwrap();
 
-        // 3. Generate the circle vertices
-        let num_segments = 100;
-        let radius = self.rs as f32; // Radius in NDC (Normalized Device Coordinates)
-        let mut shape = Vec::new();
+        // Shaders for the 3D Grid
+        let grid_vertex_shader = r#"
+            #version 140
+            in vec3 position;
+            uniform mat4 view_proj;
+            void main() {
+                gl_Position = view_proj * vec4(position, 1.0);
+            }
+        "#;
 
-        // Push the center vertex for the TriangleFan
-        shape.push(Vertex { position: [0.0, 0.0] });
+        let grid_fragment_shader = r#"
+            #version 140
+            out vec4 out_color;
+            void main() {
+                out_color = vec4(1.0, 1.0, 1.0, 0.3); // Semi-transparent white
+            }
+        "#;
 
-        for i in 0..=num_segments {
-            let angle = 2.0 * PI * (i as f32 / num_segments as f32);
-            let x = radius * angle.cos();
-            let y = radius * angle.sin();
-            shape.push(Vertex { position: [x, y] });
-        }
+        let grid_program = glium::Program::from_source(
+            &display,
+            grid_vertex_shader,
+            grid_fragment_shader,
+            None,
+        ).unwrap();
 
-        let vertex_buffer = glium::VertexBuffer::new(&display, &shape).unwrap();
+        // Generate Flamm's paraboloid grid
+        let (grid_vb, grid_ib) = self.generate_grid(&display);
+
+        // Generate 3D UV Sphere for Event Horizon (32 rings, 32 sectors)
+        let (sphere_vb, sphere_ib) = self.generate_sphere(&display, 32, 32);
 
         self.window = Some(window);
         self.display = Some(display);
         self.program = Some(program);
-        self.vertex_buffer = Some(vertex_buffer);
+        self.vertex_buffer = Some(sphere_vb);
+        self.index_buffer = Some(sphere_ib);
+        self.grid_program = Some(grid_program);
+        self.grid_vertex_buffer = Some(grid_vb);
+        self.grid_index_buffer = Some(grid_ib);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+
+            WindowEvent::MouseInput { state, button, .. } => {
+                if button == MouseButton::Left {
+                    match state {
+                        ElementState::Pressed => {
+                            self.camera.start_drag(self.last_cursor.0, self.last_cursor.1);
+                        }
+                        ElementState::Released => self.camera.end_drag(),
+                    }
+                }
+            }
+
+            WindowEvent::CursorMoved { position, .. } => {
+                self.last_cursor = (position.x, position.y);
+                self.camera.mouse_moved(position.x, position.y);
+            }
+            
+            WindowEvent::MouseWheel { delta, .. } => {
+                let y = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y,
+                    MouseScrollDelta::PixelDelta(p) => (p.y / 20.0) as f32,
+                };
+                self.camera.scroll(y);
+            }
+
             WindowEvent::RedrawRequested => {
                 let display = self.display.as_ref().unwrap();
                 let mut frame = display.draw();
 
-                frame.clear_color(0.0, 0.0, 0.0, 1.0);
+                // Clear both color buffer AND depth buffer
+                frame.clear_color_and_depth((0.0, 0.0, 0.0, 1.0), 1.0);
 
-                if let (Some(program), Some(vertex_buffer)) = (&self.program, &self.vertex_buffer) {
+                let (width, height) = frame.get_dimensions();
+                let aspect = width as f32 / height as f32;
 
-                    // GET THE CURRENT WINDOW DIMENSIONS
-                    let (width, height) = frame.get_dimensions();
-                    let aspect_ratio = height as f32 / width as f32;
-                    
+                let view = self.camera.view_matrix();
+                let proj = self.camera.projection_matrix(aspect, 60.0_f32.to_radians());
+                let view_proj = proj * view;
 
-                    // CREATE AN ASPECT RATIO MATRIX
-                    // We scale the X axis by the aspect ratio so it squishes X properly.
+                // Shared depth parameter configuration for 3D drawing
+                let depth_params = glium::DrawParameters {
+                    depth: glium::Depth {
+                        test: glium::draw_parameters::DepthTest::IfLess,
+                        write: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
 
-                    let matrix = [
-                        [aspect_ratio * WORLD_TO_NDC, 0.0, 0.0, 0.0],
-                        [0.0, WORLD_TO_NDC, 0.0, 0.0],
-                        [0.0, 0.0, 1.0, 0.0],
-                        [0.0, 0.0, 0.0, 1.0f32],
-                    ];
-
-                    let indices = glium::index::NoIndices(glium::index::PrimitiveType::TriangleFan);
-
-                    // PASS THE MATRIX IN THE UNIFORMS
+                // 1. Draw 3D Event Horizon Sphere
+                if let (Some(program), Some(vertex_buffer), Some(index_buffer)) = 
+                    (&self.program, &self.vertex_buffer, &self.index_buffer) 
+                {
                     let uniforms = glium::uniform! {
-                        matrix: matrix,
+                        view_proj: view_proj.to_cols_array_2d(),
                         color: [1.0f32, 0.0, 0.0],
                     };
 
-                    frame
-                        .draw(
-                            vertex_buffer,
-                            &indices,
-                            program,
-                            &uniforms,
-                            &Default::default(),
-                        )
-                        .unwrap();
+                    frame.draw(vertex_buffer, index_buffer, program, &uniforms, &depth_params).unwrap();
+                }
 
-                    for ray in &mut self.rays {
-                        if ray.alive{
-                            ray.step(0.01, self.rs, 20.0);
+                // 2. Draw 3D Flamm's Paraboloid Grid
+                if let (Some(grid_prog), Some(grid_vb), Some(grid_ib)) =
+                    (&self.grid_program, &self.grid_vertex_buffer, &self.grid_index_buffer)
+                {
+                    let grid_params = glium::DrawParameters {
+                        blend: glium::Blend::alpha_blending(),
+                        depth: glium::Depth {
+                            test: glium::draw_parameters::DepthTest::IfLess,
+                            write: true,
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    };
 
-                        }
-                    }
-                    
-                    
-                    for ray in &self.rays{
-                        if ray.trail.len() >= 2 {
-                        let trail_verts: Vec<Vertex> = ray.trail.iter()
-                            .map(|p| Vertex { position: *p })
-                            .collect();
-                        let trail_vb = glium::VertexBuffer::new(display, &trail_verts).unwrap();
-                        let line_indices = glium::index::NoIndices(glium::index::PrimitiveType::LineStrip);
-
-                        frame.draw(
-                            &trail_vb,
-                            &line_indices,
-                            program,
-                            &glium::uniform! { matrix: matrix, color: [1.0f32, 1.0, 1.0] },
-                            &Default::default(),
-                        ).unwrap();
-                    }
-                    }
+                    frame.draw(
+                        grid_vb,
+                        grid_ib,
+                        grid_prog,
+                        &glium::uniform! {
+                            view_proj: view_proj.to_cols_array_2d(),
+                        },
+                        &grid_params,
+                    ).unwrap();
                 }
 
                 frame.finish().unwrap();
             }
-            // Request redraw when resized so the circle doesn't vanish
+
             WindowEvent::Resized(size) => {
                 if let Some(display) = &self.display {
-                    display.resize(size.into());
+                    display.resize(size.into());    
                     if let Some(window) = &self.window {
                         window.request_redraw();
                     }
@@ -186,8 +348,8 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-    if let Some(window) = &self.window {
-        window.request_redraw();
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
     }
-}
 }
