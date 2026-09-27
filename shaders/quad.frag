@@ -8,7 +8,6 @@
         uniform vec3 cam_up;
         uniform float fov;
         uniform float aspect;
-        uniform float psi_predicted;
 
         vec4 geodesic_rhs(vec4 s, float e, float rs) {
             float r = s.x;
@@ -74,8 +73,6 @@
             return vec3(brightness);
         }
 
-        
-
         vec3 trace(vec3 cam_pos, vec3 dir, float rs) {
             vec4 state;
             float e;
@@ -83,7 +80,7 @@
             ray_init(cam_pos, dir, rs, state, e, e_r, e_perp);
 
             const int MAX_STEPS = 200;
-            const float DL = 0.3;
+            const float DL = 0.1;
             const float R_MAX = 100.0;
 
             for (int i = 0; i < MAX_STEPS; i++) {
@@ -119,13 +116,5 @@
                 + ndc.y * tan_half_fov * cam_up
             );
 
-            vec3 color = trace(cam_pos, dir, rs);
-
-            float psi_actual = acos(dot(normalize(dir), normalize(cam_forward)));
-            float ring_width = 0.001; // radians, tune for thickness
-            if (abs(psi_actual - psi_predicted) < ring_width) {
-                color = vec3(0.0, 1.0, 0.0); // bright green marker
-            }
-
-            out_color = vec4(color, 1.0);
+            out_color = vec4(trace(cam_pos, dir, rs), 1.0);
         }

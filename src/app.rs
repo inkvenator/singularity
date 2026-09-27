@@ -4,10 +4,9 @@ use glium::winit::event::WindowEvent;
 use glium::winit::event_loop::ActiveEventLoop;
 use glium::winit::window::WindowId;
 use glium::Surface;
-use std::f32::consts::PI;
-use crate::physics::Ray;
 use crate::camera::Camera;
-use glium::winit::event::{ElementState, MouseButton, MouseScrollDelta};
+use glium::winit::event::{ElementState, MouseButton, MouseScrollDelta, KeyEvent};
+use glium::winit::keyboard::{PhysicalKey, KeyCode};
 
 #[derive(Copy, Clone)]
 struct Vertex2D {
@@ -24,10 +23,6 @@ implement_vertex!(Vertex3D, position);
 pub struct App {
     display: Option<glium::Display<glium::glutin::surface::WindowSurface>>,
     window: Option<glium::winit::window::Window>,
-    program: Option<glium::Program>,
-    vertex_buffer: Option<glium::VertexBuffer<Vertex3D>>,
-    index_buffer: Option<glium::IndexBuffer<u32>>,
-    rays: Vec<Ray>,
     rs: f64,
     camera: Camera,
     last_cursor: (f64, f64),
@@ -39,6 +34,8 @@ pub struct App {
     grid_program: Option<glium::Program>,
     grid_vertex_buffer: Option<glium::VertexBuffer<Vertex3D>>,
     grid_index_buffer: Option<glium::IndexBuffer<u32>>,
+
+    show_grid: bool,
 }
 
 impl Default for App {
@@ -50,10 +47,6 @@ impl Default for App {
         App {
             display: None, 
             window: None, 
-            program: None, 
-            vertex_buffer: None,
-            index_buffer: None,
-            rays: Vec::new(),
             rs,
             camera,
             last_cursor: (0.0, 0.0),
@@ -62,6 +55,8 @@ impl Default for App {
             grid_index_buffer: None,
             quad_program: None,
             quad_vertex_buffer: None,
+
+            show_grid: true, 
         }
     }
 }
@@ -156,18 +151,6 @@ impl ApplicationHandler for App {
         let quad_vb = glium::VertexBuffer::new(&display, &quad_verts).unwrap();
 
 
-        // Shaders for the 3D Sphere
-        let vertex_shader_src = include_str!("../shaders/sphere.vert");
-
-        let fragment_shader_src = include_str!("../shaders/sphere.frag");
-
-        let program = glium::Program::from_source(
-            &display,
-            vertex_shader_src,
-            fragment_shader_src,
-            None,
-        ).unwrap();
-
         // Shaders for the 3D Grid
         let grid_vertex_shader = include_str!("../shaders/grid.vert");
 
@@ -185,7 +168,6 @@ impl ApplicationHandler for App {
 
         self.window = Some(window);
         self.display = Some(display);
-        self.program = Some(program);
         self.grid_program = Some(grid_program);
         self.grid_vertex_buffer = Some(grid_vb);
         self.grid_index_buffer = Some(grid_ib);
@@ -196,6 +178,15 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput {
+                event: KeyEvent {
+                    physical_key: PhysicalKey::Code(KeyCode::KeyG),
+                    state: ElementState::Pressed,
+                    repeat: false,
+                    .. },
+            .. } => {
+                self.show_grid = !self.show_grid;
+            }
 
             WindowEvent::MouseInput { state, button, .. } => {
                 if button == MouseButton::Left {
@@ -250,10 +241,6 @@ impl ApplicationHandler for App {
 
                 let indices = glium::index::NoIndices(glium::index::PrimitiveType::TriangleStrip);
 
-                let d = cam_pos.length();
-                let b_crit = 3.0_f32 * 3f32.sqrt() / 2.0; // ≈ 2.598
-                let psi_predicted = (b_crit * (1.0 - self.rs as f32 / d).sqrt() / d).asin();
-
                 frame.draw(
                     quad_vb,
                     &indices,
@@ -266,7 +253,6 @@ impl ApplicationHandler for App {
                         fov: self.camera.fov_degrees.to_radians(),
                         aspect: aspect,
                         rs: self.rs as f32,
-                        psi_predicted : psi_predicted,
                     },
                     &quad_params,
                 ).unwrap();
@@ -274,28 +260,30 @@ impl ApplicationHandler for App {
 
 
                 // Draw 3D Flamm's Paraboloid Grid
-                if let (Some(grid_prog), Some(grid_vb), Some(grid_ib)) =
-                    (&self.grid_program, &self.grid_vertex_buffer, &self.grid_index_buffer)
-                {
-                    let grid_params = glium::DrawParameters {
-                        blend: glium::Blend::alpha_blending(),
-                        depth: glium::Depth {
-                            test: glium::draw_parameters::DepthTest::IfLess,
-                            write: true,
+                if self.show_grid{
+                    if let (Some(grid_prog), Some(grid_vb), Some(grid_ib)) =
+                        (&self.grid_program, &self.grid_vertex_buffer, &self.grid_index_buffer)
+                    {
+                        let grid_params = glium::DrawParameters {
+                            blend: glium::Blend::alpha_blending(),
+                            depth: glium::Depth {
+                                test: glium::draw_parameters::DepthTest::IfLess,
+                                write: true,
+                                ..Default::default()
+                            },
                             ..Default::default()
-                        },
-                        ..Default::default()
-                    };
+                        };
 
-                    frame.draw(
-                        grid_vb,
-                        grid_ib,
-                        grid_prog,
-                        &glium::uniform! {
-                            view_proj: view_proj.to_cols_array_2d(),
-                        },
-                        &grid_params,
-                    ).unwrap();
+                        frame.draw(
+                            grid_vb,
+                            grid_ib,
+                            grid_prog,
+                            &glium::uniform! {
+                                view_proj: view_proj.to_cols_array_2d(),
+                            },
+                            &grid_params,
+                        ).unwrap();
+                    }
                 }
 
                 frame.finish().unwrap();
