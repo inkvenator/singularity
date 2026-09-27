@@ -196,30 +196,44 @@ impl ApplicationHandler for App {
             }
         "#;
 
-        let quad_fragment_shader = r#"
-            #version 140
-            in vec2 v_uv;
-            out vec4 out_color;
+        let quad_fragment_shader = r#"#version 140
+        in vec2 v_uv;
+        out vec4 out_color;
 
-            uniform vec3 cam_pos;
-            uniform vec3 cam_forward;
-            uniform vec3 cam_right;
-            uniform vec3 cam_up;
-            uniform float fov;     // radians
-            uniform float aspect;
+        uniform vec3 cam_pos;
+        uniform vec3 cam_forward;
+        uniform vec3 cam_right;
+        uniform vec3 cam_up;
+        uniform float fov;
+        uniform float aspect;
 
-            void main() {
-                vec2 ndc = v_uv * 2.0 - 1.0;
-                float tan_half_fov = tan(fov * 0.5);
+        float hash(vec3 p) {
+            p = fract(p * 0.3183099 + 0.1);
+            p *= 17.0;
+            return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+        }
 
-                vec3 dir = normalize(
-                    cam_forward
-                    + ndc.x * aspect * tan_half_fov * cam_right
-                    + ndc.y * tan_half_fov * cam_up
-                );
+        vec3 starfield(vec3 dir) {
+            vec3 p = dir * 300.0;
+            vec3 cell = floor(p);
+            float h = hash(cell);
+            float star = step(0.995, h);
+            float brightness = star * hash(cell + 7.0);
+            return vec3(brightness);
+        }
 
-                out_color = vec4(dir * 0.5 + 0.5, 1.0); // direction -> color, test gradient
-            }
+        void main() {
+            vec2 ndc = v_uv * 2.0 - 1.0;
+            float tan_half_fov = tan(fov * 0.5);
+
+            vec3 dir = normalize(
+                cam_forward
+                + ndc.x * aspect * tan_half_fov * cam_right
+                + ndc.y * tan_half_fov * cam_up
+            );
+
+            out_color = vec4(starfield(dir), 1.0);
+        }
         "#;
 
         let quad_program = glium::Program::from_source(
