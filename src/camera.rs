@@ -1,5 +1,5 @@
 use glam::{Mat4, Vec3};
-use glam::camera::rh::{view::look_at_mat4, proj::directx::perspective};
+use glam::camera::rh::{view::look_at_mat4, proj::opengl::perspective};
 use std::f32::consts::PI;
 
 /// Orbit camera: always looks at `target`, position derived from
@@ -20,6 +20,8 @@ pub struct Camera {
     dragging: bool,
     last_x: f64,
     last_y: f64,
+
+    pub fov_degrees: f32,
 }
 
 impl Default for Camera {
@@ -36,6 +38,7 @@ impl Default for Camera {
             dragging: false,
             last_x: 0.0,
             last_y: 0.0,
+            fov_degrees: 60.0, 
         }
     }
 }

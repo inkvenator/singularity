@@ -6,9 +6,14 @@ use glium::winit::window::WindowId;
 use glium::Surface;
 use std::f32::consts::PI;
 use crate::physics::Ray;
-use glam::DVec2;
 use crate::camera::Camera;
 use glium::winit::event::{ElementState, MouseButton, MouseScrollDelta};
+
+#[derive(Copy, Clone)]
+struct Vertex2D {
+    position: [f32; 2],
+}
+implement_vertex!(Vertex2D, position);
 
 #[derive(Copy, Clone)]
 struct Vertex3D {
@@ -27,6 +32,9 @@ pub struct App {
     camera: Camera,
     last_cursor: (f64, f64),
 
+    quad_program: Option<glium::Program>,
+    quad_vertex_buffer:Option<glium::VertexBuffer<Vertex2D>>,
+    
     // Grid rendering
     grid_program: Option<glium::Program>,
     grid_vertex_buffer: Option<glium::VertexBuffer<Vertex3D>>,
@@ -52,6 +60,8 @@ impl Default for App {
             grid_program: None,
             grid_vertex_buffer: None,
             grid_index_buffer: None,
+            quad_program: None,
+            quad_vertex_buffer: None,
         }
     }
 }
@@ -176,6 +186,55 @@ impl ApplicationHandler for App {
             .with_title("singularity")
             .build(event_loop);
 
+        let quad_vertex_shader = r#"
+            #version 140
+            in vec2 position;
+            out vec2 v_uv;
+            void main() {
+                v_uv = position * 0.5 + 0.5; // NDC (-1..1) -> UV (0..1)
+                gl_Position = vec4(position, 0.0, 1.0);
+            }
+        "#;
+
+        let quad_fragment_shader = r#"
+            #version 140
+            in vec2 v_uv;
+            out vec4 out_color;
+
+            uniform vec3 cam_pos;
+            uniform vec3 cam_forward;
+            uniform vec3 cam_right;
+            uniform vec3 cam_up;
+            uniform float fov;     // radians
+            uniform float aspect;
+
+            void main() {
+                vec2 ndc = v_uv * 2.0 - 1.0;
+                float tan_half_fov = tan(fov * 0.5);
+
+                vec3 dir = normalize(
+                    cam_forward
+                    + ndc.x * aspect * tan_half_fov * cam_right
+                    + ndc.y * tan_half_fov * cam_up
+                );
+
+                out_color = vec4(dir * 0.5 + 0.5, 1.0); // direction -> color, test gradient
+            }
+        "#;
+
+        let quad_program = glium::Program::from_source(
+            &display, quad_vertex_shader, quad_fragment_shader, None,
+        ).unwrap();
+
+        let quad_verts = vec![
+            Vertex2D { position: [-1.0, -1.0] },
+            Vertex2D { position: [ 1.0, -1.0] },
+            Vertex2D { position: [-1.0,  1.0] },
+            Vertex2D { position: [ 1.0,  1.0] },
+        ];
+        let quad_vb = glium::VertexBuffer::new(&display, &quad_verts).unwrap();
+
+
         // Shaders for the 3D Sphere
         let vertex_shader_src = r#"
             #version 140
@@ -241,6 +300,8 @@ impl ApplicationHandler for App {
         self.grid_program = Some(grid_program);
         self.grid_vertex_buffer = Some(grid_vb);
         self.grid_index_buffer = Some(grid_ib);
+        self.quad_program = Some(quad_program);
+        self.quad_vertex_buffer = Some(quad_vb);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -294,6 +355,37 @@ impl ApplicationHandler for App {
                     },
                     ..Default::default()
                 };
+
+                if let (Some(quad_prog), Some(quad_vb)) = (&self.quad_program, &self.quad_vertex_buffer) {
+                let (forward, right, up) = self.camera.basis();
+                let cam_pos = self.camera.position();
+
+                let quad_params = glium::DrawParameters {
+                    depth: glium::Depth {
+                        test: glium::draw_parameters::DepthTest::Overwrite, // always draw, ignore depth buffer
+                        write: false, // don't write depth — sphere/grid must still occlude normally
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+
+                let indices = glium::index::NoIndices(glium::index::PrimitiveType::TriangleStrip);
+
+                frame.draw(
+                    quad_vb,
+                    &indices,
+                    quad_prog,
+                    &glium::uniform! {
+                        cam_pos: cam_pos.to_array(),
+                        cam_forward: forward.to_array(),
+                        cam_right: right.to_array(),
+                        cam_up: up.to_array(),
+                        fov: self.camera.fov_degrees.to_radians(),
+                        aspect: aspect,
+                    },
+                    &quad_params,
+                ).unwrap();
+            }
 
                 // 1. Draw 3D Event Horizon Sphere
                 if let (Some(program), Some(vertex_buffer), Some(index_buffer)) = 
