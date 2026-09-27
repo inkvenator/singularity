@@ -67,75 +67,25 @@ impl Default for App {
 }
 
 impl App {
-    /// Generate a 3D UV Sphere mesh for the Event Horizon
-    fn generate_sphere(
-        &self, 
-        display: &glium::Display<glium::glutin::surface::WindowSurface>,
-        rings: u32,
-        sectors: u32,
-    ) -> (glium::VertexBuffer<Vertex3D>, glium::IndexBuffer<u32>) {
-        let radius = self.rs as f32;
-        let mut vertices = Vec::new();
-        let mut indices = Vec::new();
-
-        // 1. Generate sphere vertices using spherical coordinates
-        for i in 0..=rings {
-            let theta = i as f32 * PI / rings as f32; // 0 to PI (north pole to south pole)
-            let sin_theta = theta.sin();
-            let cos_theta = theta.cos();
-
-            for j in 0..=sectors {
-                let phi = j as f32 * 2.0 * PI / sectors as f32; // 0 to 2*PI (around the equator)
-                let sin_phi = phi.sin();
-                let cos_phi = phi.cos();
-
-                let x = radius * sin_theta * cos_phi;
-                let y = radius * cos_theta; // Y is up
-                let z = radius * sin_theta * sin_phi;
-
-                vertices.push(Vertex3D { position: [x, y, z] });
-            }
-        }
-
-        // 2. Connect vertices into triangles
-        for i in 0..rings {
-            for j in 0..sectors {
-                let first = i * (sectors + 1) + j;
-                let second = first + sectors + 1;
-
-                // Triangle 1
-                indices.push(first);
-                indices.push(second);
-                indices.push(first + 1);
-
-                // Triangle 2
-                indices.push(second);
-                indices.push(second + 1);
-                indices.push(first + 1);
-            }
-        }
-
-        let vb = glium::VertexBuffer::new(display, &vertices).unwrap();
-        let ib = glium::IndexBuffer::new(
-            display, 
-            glium::index::PrimitiveType::TrianglesList, 
-            &indices
-        ).unwrap();
-
-        (vb, ib)
-    }
-
+    
     /// Generate Flamm's paraboloid grid mesh
     fn generate_grid(&self, display: &glium::Display<glium::glutin::surface::WindowSurface>)
         -> (glium::VertexBuffer<Vertex3D>, glium::IndexBuffer<u32>)
     {
         const GRID_SIZE: usize = 25;
         const SPACING: f32 = 0.4;
+        const NAN_MARKER: f32 = f32::NAN;
 
-        let mut vertices = Vec::new();
         let rs = self.rs as f32;
 
-        // Generate grid vertices
+        // Calibrate so the grid's far edges sit near y = 0, matching the
+        // real (flat) plane the disk/rays are computed in. Not derived from
+        // physics — purely a visual offset, tuned to this grid's own extent.
+        let max_r = (GRID_SIZE as f32 * SPACING / 2.0) * std::f32::consts::SQRT_2;
+        let offset = 2.0 * (rs * (max_r - rs)).sqrt();
+
+        let mut vertices = Vec::new();
+
         for z in 0..=GRID_SIZE {
             for x in 0..=GRID_SIZE {
                 let world_x = (x as f32 - GRID_SIZE as f32 / 2.0) * SPACING;
@@ -143,33 +93,36 @@ impl App {
 
                 let r = (world_x * world_x + world_z * world_z).sqrt();
 
-                // Flamm's paraboloid formula: y = 2·√(rs·(r − rs))
-                let y = if r > rs {
-                    2.0 * (rs * (r - rs)).sqrt()
+                if r > rs {
+                    let y = 2.0 * (rs * (r - rs)).sqrt() - offset;
+                    vertices.push(Vertex3D { position: [world_x, y, world_z] });
                 } else {
-                    // Inside event horizon: create a pit
-                    -2.0 * (rs * rs).sqrt()
-                };
-
-                vertices.push(Vertex3D {
-                    position: [world_x, y, world_z],
-                });
+                    // Inside the horizon: mark as unusable rather than
+                    // clamping to a flat plateau. Filtered out below.
+                    vertices.push(Vertex3D { position: [NAN_MARKER, NAN_MARKER, NAN_MARKER] });
+                }
             }
         }
 
-        // Generate line indices (connect adjacent points)
+        // Only emit a line if both endpoints are valid (non-NaN).
         let mut indices = Vec::new();
+        let valid = |i: usize| !vertices[i].position[0].is_nan();
+
         for z in 0..GRID_SIZE {
             for x in 0..GRID_SIZE {
-                let i = (z * (GRID_SIZE + 1) + x) as u32;
+                let i = z * (GRID_SIZE + 1) + x;
 
-                // Horizontal line
-                indices.push(i);
-                indices.push(i + 1);
+                // Horizontal segment: i -> i+1
+                if valid(i) && valid(i + 1) {
+                    indices.push(i as u32);
+                    indices.push((i + 1) as u32);
+                }
 
-                // Vertical line
-                indices.push(i);
-                indices.push(i + (GRID_SIZE + 1) as u32);
+                // Vertical segment: i -> i + (GRID_SIZE+1)
+                if valid(i) && valid(i + GRID_SIZE + 1) {
+                    indices.push(i as u32);
+                    indices.push((i + GRID_SIZE + 1) as u32);
+                }
             }
         }
 
@@ -186,55 +139,9 @@ impl ApplicationHandler for App {
             .with_title("singularity")
             .build(event_loop);
 
-        let quad_vertex_shader = r#"
-            #version 140
-            in vec2 position;
-            out vec2 v_uv;
-            void main() {
-                v_uv = position * 0.5 + 0.5; // NDC (-1..1) -> UV (0..1)
-                gl_Position = vec4(position, 0.0, 1.0);
-            }
-        "#;
+        let quad_vertex_shader =include_str!("../shaders/quad.vert");
 
-        let quad_fragment_shader = r#"#version 140
-        in vec2 v_uv;
-        out vec4 out_color;
-
-        uniform vec3 cam_pos;
-        uniform vec3 cam_forward;
-        uniform vec3 cam_right;
-        uniform vec3 cam_up;
-        uniform float fov;
-        uniform float aspect;
-
-        float hash(vec3 p) {
-            p = fract(p * 0.3183099 + 0.1);
-            p *= 17.0;
-            return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
-        }
-
-        vec3 starfield(vec3 dir) {
-            vec3 p = dir * 300.0;
-            vec3 cell = floor(p);
-            float h = hash(cell);
-            float star = step(0.995, h);
-            float brightness = star * hash(cell + 7.0);
-            return vec3(brightness);
-        }
-
-        void main() {
-            vec2 ndc = v_uv * 2.0 - 1.0;
-            float tan_half_fov = tan(fov * 0.5);
-
-            vec3 dir = normalize(
-                cam_forward
-                + ndc.x * aspect * tan_half_fov * cam_right
-                + ndc.y * tan_half_fov * cam_up
-            );
-
-            out_color = vec4(starfield(dir), 1.0);
-        }
-        "#;
+        let quad_fragment_shader = include_str!("../shaders/quad.frag");
 
         let quad_program = glium::Program::from_source(
             &display, quad_vertex_shader, quad_fragment_shader, None,
@@ -250,23 +157,9 @@ impl ApplicationHandler for App {
 
 
         // Shaders for the 3D Sphere
-        let vertex_shader_src = r#"
-            #version 140
-            in vec3 position;
-            uniform mat4 view_proj;
-            void main() {
-                gl_Position = view_proj * vec4(position, 1.0);
-            }
-        "#;
+        let vertex_shader_src = include_str!("../shaders/sphere.vert");
 
-        let fragment_shader_src = r#"
-            #version 140
-            uniform vec3 color;
-            out vec4 out_color;
-            void main() {
-                out_color = vec4(color, 1.0);
-            }
-        "#;
+        let fragment_shader_src = include_str!("../shaders/sphere.frag");
 
         let program = glium::Program::from_source(
             &display,
@@ -276,22 +169,9 @@ impl ApplicationHandler for App {
         ).unwrap();
 
         // Shaders for the 3D Grid
-        let grid_vertex_shader = r#"
-            #version 140
-            in vec3 position;
-            uniform mat4 view_proj;
-            void main() {
-                gl_Position = view_proj * vec4(position, 1.0);
-            }
-        "#;
+        let grid_vertex_shader = include_str!("../shaders/grid.vert");
 
-        let grid_fragment_shader = r#"
-            #version 140
-            out vec4 out_color;
-            void main() {
-                out_color = vec4(1.0, 1.0, 1.0, 0.3); // Semi-transparent white
-            }
-        "#;
+        let grid_fragment_shader = include_str!("../shaders/grid.frag");
 
         let grid_program = glium::Program::from_source(
             &display,
@@ -303,14 +183,9 @@ impl ApplicationHandler for App {
         // Generate Flamm's paraboloid grid
         let (grid_vb, grid_ib) = self.generate_grid(&display);
 
-        // Generate 3D UV Sphere for Event Horizon (32 rings, 32 sectors)
-        let (sphere_vb, sphere_ib) = self.generate_sphere(&display, 32, 32);
-
         self.window = Some(window);
         self.display = Some(display);
         self.program = Some(program);
-        self.vertex_buffer = Some(sphere_vb);
-        self.index_buffer = Some(sphere_ib);
         self.grid_program = Some(grid_program);
         self.grid_vertex_buffer = Some(grid_vb);
         self.grid_index_buffer = Some(grid_ib);
@@ -360,16 +235,6 @@ impl ApplicationHandler for App {
                 let proj = self.camera.projection_matrix(aspect, 60.0_f32.to_radians());
                 let view_proj = proj * view;
 
-                // Shared depth parameter configuration for 3D drawing
-                let depth_params = glium::DrawParameters {
-                    depth: glium::Depth {
-                        test: glium::draw_parameters::DepthTest::IfLess,
-                        write: true,
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                };
-
                 if let (Some(quad_prog), Some(quad_vb)) = (&self.quad_program, &self.quad_vertex_buffer) {
                 let (forward, right, up) = self.camera.basis();
                 let cam_pos = self.camera.position();
@@ -385,6 +250,10 @@ impl ApplicationHandler for App {
 
                 let indices = glium::index::NoIndices(glium::index::PrimitiveType::TriangleStrip);
 
+                let d = cam_pos.length();
+                let b_crit = 3.0_f32 * 3f32.sqrt() / 2.0; // ≈ 2.598
+                let psi_predicted = (b_crit * (1.0 - self.rs as f32 / d).sqrt() / d).asin();
+
                 frame.draw(
                     quad_vb,
                     &indices,
@@ -396,24 +265,15 @@ impl ApplicationHandler for App {
                         cam_up: up.to_array(),
                         fov: self.camera.fov_degrees.to_radians(),
                         aspect: aspect,
+                        rs: self.rs as f32,
+                        psi_predicted : psi_predicted,
                     },
                     &quad_params,
                 ).unwrap();
             }
 
-                // 1. Draw 3D Event Horizon Sphere
-                if let (Some(program), Some(vertex_buffer), Some(index_buffer)) = 
-                    (&self.program, &self.vertex_buffer, &self.index_buffer) 
-                {
-                    let uniforms = glium::uniform! {
-                        view_proj: view_proj.to_cols_array_2d(),
-                        color: [1.0f32, 0.0, 0.0],
-                    };
 
-                    frame.draw(vertex_buffer, index_buffer, program, &uniforms, &depth_params).unwrap();
-                }
-
-                // 2. Draw 3D Flamm's Paraboloid Grid
+                // Draw 3D Flamm's Paraboloid Grid
                 if let (Some(grid_prog), Some(grid_vb), Some(grid_ib)) =
                     (&self.grid_program, &self.grid_vertex_buffer, &self.grid_index_buffer)
                 {
