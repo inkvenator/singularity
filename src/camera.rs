@@ -32,7 +32,7 @@ impl Default for Camera {
             min_radius: 2.0,
             max_radius: 50.0,
             azimuth: 0.0,
-            elevation: PI / 2.0,
+            elevation: PI / 2.5,
             orbit_speed: 0.005,
             zoom_speed: 0.5,
             dragging: false,

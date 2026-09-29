@@ -36,13 +36,14 @@ pub struct App {
     grid_index_buffer: Option<glium::IndexBuffer<u32>>,
 
     show_grid: bool,
+ 
 }
 
 impl Default for App {
     fn default() -> Self {
         let mut camera = Camera::default();
         camera.radius = 6.0;
-        let rs = 1.0_f64;
+        let rs = 0.5_f64;
 
         App {
             display: None, 
@@ -56,7 +57,8 @@ impl Default for App {
             quad_program: None,
             quad_vertex_buffer: None,
 
-            show_grid: true, 
+            show_grid: true,
+            
         }
     }
 }
@@ -232,8 +234,8 @@ impl ApplicationHandler for App {
 
                 let quad_params = glium::DrawParameters {
                     depth: glium::Depth {
-                        test: glium::draw_parameters::DepthTest::Overwrite, // always draw, ignore depth buffer
-                        write: false, // don't write depth — sphere/grid must still occlude normally
+                        test: glium::draw_parameters::DepthTest::IfLessOrEqual,
+                        write: true,
                         ..Default::default()
                     },
                     ..Default::default()
@@ -253,6 +255,9 @@ impl ApplicationHandler for App {
                         fov: self.camera.fov_degrees.to_radians(),
                         aspect: aspect,
                         rs: self.rs as f32,
+                        disk_inner: (self.rs as f32) * 3.0,  
+                        disk_outer: (self.rs as f32) * 6.0,
+                        view_proj: view_proj.to_cols_array_2d(),
                     },
                     &quad_params,
                 ).unwrap();
