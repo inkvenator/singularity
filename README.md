@@ -2,7 +2,9 @@
 
 A real-time black hole renderer written in Rust (glium) with custom GLSL shaders. Light rays are traced through Schwarzschild spacetime to produce gravitational lensing and a lensed accretion disk, with a Flamm's paraboloid grid drawn alongside.
 
-<img src="gif/preview.gif" alt="preview" width="800">
+<p align="center">
+  <img src="gif/preview.gif" alt="preview" width="400">
+</p>
 
 ## Prerequisites
 
